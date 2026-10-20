@@ -45,6 +45,8 @@ export type HookConfig = CompactOptions & {
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
+  /** Base URL of the Jev server (local-patch: default http://127.0.0.1:8787). */
+  baseUrl?: string;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -84,10 +86,41 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   if (apiKey) config.apiKey = apiKey;
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
+  const baseUrl = optionString(options, 'baseUrl');
+  if (baseUrl) config.baseUrl = baseUrl;
+  // Laya: contesto piccolo → budget stato ridotto se non impostato esplicitamente
+  if (config.baseUrl && numbers.maxStateTokens === undefined) {
+    config.maxStateTokens = LAYA_MAX_STATE_TOKENS;
+  }
   return config;
 }
 
-/** A `JevAsker` over the engine's `$.http.fetch`. */
+/** Local patch: Laya endpoint defaults to the user's local server. */
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
+
+/** Local patch: Laya has a small context — reduced state budget when not set explicitly. */
+const LAYA_MAX_STATE_TOKENS = 900;
+
+async function getBaseUrl(
+  $: {
+    env: { get: (name: string) => Promise<string | undefined> };
+    settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
+  },
+  config: HookConfig,
+): Promise<string> {
+  if (config.baseUrl) return config.baseUrl;
+  const fromEnv = await $.env.get('JEV_BASE_URL');
+  if (fromEnv) return fromEnv;
+  const settings = await $.settings.read();
+  const env = settings['env'];
+  if (env && typeof env === 'object') {
+    const value = (env as Record<string, unknown>)['JEV_BASE_URL'];
+    if (typeof value === 'string' && value) return value;
+  }
+  return DEFAULT_BASE_URL;
+}
+
+/** A `JevAsker` over the engine's `$.http.fetch` — hosted Jev protocol. */
 export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
   return {
     async ask(state, questions) {
@@ -98,6 +131,62 @@ export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): Jev
         body: request.body,
       });
       return parseJevResponse(response.status, response.ok, response.text);
+    },
+  };
+}
+
+/**
+ * Local patch: `JevAsker` per un server Laya (`POST {base}/ask`, protocollo choice).
+ * La lib originale fa due domande `noul` per call (`call_X`, `result_X`);
+ * Laya risponde con una sola scelta per call — bridge in uscita:
+ *   full → keep call+result, head → keep call + result troncato, drop → drop di entrambi.
+ */
+export function layaAsker(fetchFn: HookFetch, baseUrl: string): JevAsker {
+  const url = /\/ask\/?$/.test(baseUrl) ? baseUrl : `${baseUrl.replace(/\/$/, '')}/ask`;
+  return {
+    async ask(state, questions) {
+      // 1. Dedupe call_X / result_X → una choice question per call
+      const layaQuestions: Record<
+        string,
+        { type: 'choice'; instructions: string; criteria: Record<string, string> }
+      > = {};
+      for (const [name, question] of Object.entries(questions)) {
+        if (question.type !== 'noul') continue;
+        const id = name.replace(/^(call|result)_/, '');
+        if (layaQuestions[id]) continue;
+        layaQuestions[id] = {
+          type: 'choice',
+          instructions: `${question.instructions} (score this tool call for history compaction)`,
+          criteria: {
+            drop: 'remove the call entirely; it is irrelevant to the current goal',
+            head: 'keep the call and a short head of its output; contents may matter but full text is not needed',
+            full: 'keep the call and its full output verbatim',
+          },
+        };
+      }
+      // 2. POST {base}/ask — niente auth, model 'laya'
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'laya', state, questions: layaQuestions }),
+      });
+      if (!response.ok) {
+        throw new Error(`Laya request failed (${response.status}): ${response.text.slice(0, 200)}`);
+      }
+      let parsed: { answers?: Record<string, { choice?: string }> };
+      try {
+        parsed = JSON.parse(response.text);
+      } catch {
+        throw new Error('Laya returned malformed JSON');
+      }
+      if (!parsed.answers) throw new Error('Laya response is missing answers');
+      // 3. Bridge: scelta unica → noul call_X / result_X (sconosciuto = keep, come nel fork)
+      const answers: Record<string, { noul: number }> = {};
+      for (const [id, answer] of Object.entries(parsed.answers)) {
+        answers[`call_${id}`] = { noul: answer.choice === 'drop' ? 0 : 1 };
+        answers[`result_${id}`] = { noul: answer.choice === 'full' ? 1 : 0 };
+      }
+      return { answers };
     },
   };
 }
@@ -167,6 +256,11 @@ export async function compactSession(
   config: HookConfig,
   fetchFn: HookFetch,
 ): Promise<SessionCompaction> {
+  if (config.baseUrl) {
+    // Laya locale: nessuna API key richiesta
+    const result = await compact(messages, layaAsker(fetchFn, config.baseUrl), config);
+    return { result, messages: toSessionMessages(messages, result.messages) };
+  }
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
   const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), config);
   return { result, messages: toSessionMessages(messages, result.messages) };
@@ -262,7 +356,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.compact', async ($, event, next) => {
     try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
+      const config = {
+        ...configured,
+        apiKey: await getApiKey($, configured),
+        baseUrl: await getBaseUrl($, configured),
+      };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
         const response = await $.http.fetch(url, init);
         return { status: response.status, ok: response.ok, text: response.text };

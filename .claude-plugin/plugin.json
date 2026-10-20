@@ -7,8 +7,14 @@
     "apiKey": {
       "type": "string",
       "title": "TypeSafe API key",
-      "description": "TypeSafe API key. Leave unset to use TYPESAFE_API_KEY.",
+      "description": "TypeSafe API key. Leave unset to use TYPESAFE_API_KEY. Not needed for the Laya backend.",
       "sensitive": true
+    },
+    "baseUrl": {
+      "type": "string",
+      "title": "Laya server URL",
+      "description": "Local patch: when set, uses the Laya choice protocol at this URL. Fallback order: this setting, JEV_BASE_URL env, http://127.0.0.1:8000.",
+      "default": "http://127.0.0.1:8000"
     },
     "keepThreshold": {
       "type": "number",
