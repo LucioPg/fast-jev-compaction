@@ -95,8 +95,8 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   return config;
 }
 
-/** Local patch: Laya endpoint defaults to the user's local server. */
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
+/** Local patch: Jev-protocol endpoint defaults to the user's local Laya server. */
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1/systemone';
 
 /** Local patch: Laya has a small context — reduced state budget when not set explicitly. */
 const LAYA_MAX_STATE_TOKENS = 900;
@@ -120,73 +120,22 @@ async function getBaseUrl(
   return DEFAULT_BASE_URL;
 }
 
-/** A `JevAsker` over the engine's `$.http.fetch` — hosted Jev protocol. */
-export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
+/** A `JevAsker` over the engine's `$.http.fetch` — Jev protocol (hosted TypeSafe or local Laya). */
+export function jevAsker(
+  fetchFn: HookFetch,
+  apiKey: string,
+  model: string,
+  baseUrl?: string,
+): JevAsker {
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model }, state, questions);
+      const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
       });
       return parseJevResponse(response.status, response.ok, response.text);
-    },
-  };
-}
-
-/**
- * Local patch: `JevAsker` per un server Laya (`POST {base}/ask`, protocollo choice).
- * La lib originale fa due domande `noul` per call (`call_X`, `result_X`);
- * Laya risponde con una sola scelta per call — bridge in uscita:
- *   full → keep call+result, head → keep call + result troncato, drop → drop di entrambi.
- */
-export function layaAsker(fetchFn: HookFetch, baseUrl: string): JevAsker {
-  const url = /\/ask\/?$/.test(baseUrl) ? baseUrl : `${baseUrl.replace(/\/$/, '')}/ask`;
-  return {
-    async ask(state, questions) {
-      // 1. Dedupe call_X / result_X → una choice question per call
-      const layaQuestions: Record<
-        string,
-        { type: 'choice'; instructions: string; criteria: Record<string, string> }
-      > = {};
-      for (const [name, question] of Object.entries(questions)) {
-        if (question.type !== 'noul') continue;
-        const id = name.replace(/^(call|result)_/, '');
-        if (layaQuestions[id]) continue;
-        layaQuestions[id] = {
-          type: 'choice',
-          instructions: `${question.instructions} (score this tool call for history compaction)`,
-          criteria: {
-            drop: 'remove the call entirely; it is irrelevant to the current goal',
-            head: 'keep the call and a short head of its output; contents may matter but full text is not needed',
-            full: 'keep the call and its full output verbatim',
-          },
-        };
-      }
-      // 2. POST {base}/ask — niente auth, model 'laya'
-      const response = await fetchFn(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'laya', state, questions: layaQuestions }),
-      });
-      if (!response.ok) {
-        throw new Error(`Laya request failed (${response.status}): ${response.text.slice(0, 200)}`);
-      }
-      let parsed: { answers?: Record<string, { choice?: string }> };
-      try {
-        parsed = JSON.parse(response.text);
-      } catch {
-        throw new Error('Laya returned malformed JSON');
-      }
-      if (!parsed.answers) throw new Error('Laya response is missing answers');
-      // 3. Bridge: scelta unica → noul call_X / result_X (sconosciuto = keep, come nel fork)
-      const answers: Record<string, { noul: number }> = {};
-      for (const [id, answer] of Object.entries(parsed.answers)) {
-        answers[`call_${id}`] = { noul: answer.choice === 'drop' ? 0 : 1 };
-        answers[`result_${id}`] = { noul: answer.choice === 'full' ? 1 : 0 };
-      }
-      return { answers };
     },
   };
 }
@@ -257,8 +206,12 @@ export async function compactSession(
   fetchFn: HookFetch,
 ): Promise<SessionCompaction> {
   if (config.baseUrl) {
-    // Laya locale: nessuna API key richiesta
-    const result = await compact(messages, layaAsker(fetchFn, config.baseUrl), config);
+    // Server locale (Laya): nessuna API key richiesta, stesso protocollo Jev su /v1/systemone
+    const result = await compact(
+      messages,
+      jevAsker(fetchFn, config.apiKey ?? '', config.model, config.baseUrl),
+      config,
+    );
     return { result, messages: toSessionMessages(messages, result.messages) };
   }
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
