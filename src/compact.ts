@@ -270,14 +270,38 @@ export async function compact(
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
   const answers = new Map<string, CallAnswer>();
+  // [DEBUG temporaneo fork] fasi fit
+  const debugLog = (payload: Record<string, unknown>): void => {
+    void (async (): Promise<void> => {
+      try {
+        const line =
+          JSON.stringify({ ts: new Date().toISOString(), ...payload }) + '\n';
+        const fs = (await import('node:fs')) as typeof import('node:fs');
+        fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
+      } catch {
+        console.error('[fast-jev-debug] ' + JSON.stringify(payload));
+      }
+    })();
+  };
   if (candidates.length > 0) {
+    debugLog({
+      phase: 'fit-start',
+      messages: messages.length,
+      calls: calls.length,
+      candidates: candidates.length,
+    });
     const state = fitState(messages, calls, resolved);
+    debugLog({ phase: 'fit-done', stage: state.stage, tokens: state.tokens });
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
+    debugLog({ phase: 'requests-start', batches: batches.length });
     const answered = await Promise.all(
       batches.map((batch) => askBatch(asker, state.state, batch)),
     );
+    debugLog({ phase: 'requests-done' });
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
+  } else {
+    debugLog({ phase: 'no-candidates' });
   }
 
   const decisions = calls.map((call) =>

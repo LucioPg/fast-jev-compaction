@@ -340,6 +340,21 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('session.compact', async ($, event, next) => {
     try {
+      // [DEBUG temporaneo fork] ingresso hook
+      try {
+        const line =
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            phase: 'hook-start',
+            messages: event.messages.length,
+          }) + '\n';
+        try {
+          const fs = await import('node:fs');
+          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
+        } catch {
+          console.error('[fast-jev-debug] ' + line);
+        }
+      } catch {}
       const config = {
         ...configured,
         apiKey: await getApiKey($, configured),
