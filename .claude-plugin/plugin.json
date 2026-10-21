@@ -31,8 +31,8 @@
     "compactAtPercent": {
       "type": "number",
       "title": "Compaction percentage",
-      "description": "DEBUG temporaneo: 0 = compaction a ogni fine turno (default 60).",
-      "default": 0
+      "description": "Context percent that triggers automatic compaction at turn end.",
+      "default": 60
     },
     "minReductionRatio": {
       "type": "number",

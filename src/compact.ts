@@ -310,44 +310,19 @@ export async function compact(
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let requestCount = 0;
   const answers = new Map<string, CallAnswer>();
-  // [DEBUG temporaneo fork] fasi fit
-  const debugLog = (payload: Record<string, unknown>): void => {
-    void (async (): Promise<void> => {
-      try {
-        const line =
-          JSON.stringify({ ts: new Date().toISOString(), ...payload }) + '\n';
-        const fs = (await import('node:fs')) as typeof import('node:fs');
-        fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
-      } catch {
-        console.error('[fast-jev-debug] ' + JSON.stringify(payload));
-      }
-    })();
-  };
   if (candidates.length > 0 || groups.length > 0) {
-    debugLog({
-      phase: 'fit-start',
-      messages: messages.length,
-      calls: calls.length,
-      candidates: candidates.length,
-      groups: groups.length,
-    });
     const state = fitState(messages, calls, resolved);
-    debugLog({ phase: 'fit-done', stage: state.stage, tokens: state.tokens });
     fitted = state;
     // I gruppi vengono chiesti per primi: una richiesta propria, poi le call individuali.
     const groupBatches =
       groups.length > 0 ? batchCalls(groups, state.tokens, resolved, groupQuestions) : [];
     const callBatches = candidates.length > 0 ? batchCalls(candidates, state.tokens, resolved) : [];
     requestCount = groupBatches.length + callBatches.length;
-    debugLog({ phase: 'requests-start', batches: requestCount });
     const answered = await Promise.all([
       ...groupBatches.map((batch) => askBatch(asker, state.state, batch, groupQuestions)),
       ...callBatches.map((batch) => askBatch(asker, state.state, batch, questionsFor)),
     ]);
-    debugLog({ phase: 'requests-done' });
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
-  } else {
-    debugLog({ phase: 'no-candidates' });
   }
 
   // Grouped calls inherit their group's vote; individually-asked calls use

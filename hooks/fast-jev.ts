@@ -143,33 +143,11 @@ export function jevAsker(
   return {
     async ask(state, questions) {
       const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
-      // [DEBUG temporaneo fork] log diagnostico su ogni richiesta — rimuovere dopo analisi
-      try {
-        const debugLine = JSON.stringify({
-          ts: new Date().toISOString(),
-          url: request.url,
-          bodyLen: request.body.length,
-          stateLen: typeof state === 'string' ? state.length : JSON.stringify(state).length,
-          questions: Object.keys(questions ?? {}),
-        });
-        try {
-          const fs = await import('node:fs');
-          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', debugLine + '\n');
-        } catch {
-          console.error('[fast-jev-debug] ' + debugLine);
-        }
-      } catch {}
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
       });
-      // [DEBUG temporaneo fork] risposta (status + inizio body)
-      try {
-        console.error(
-          `[fast-jev-debug] status=${response.status} resp=${response.text.slice(0, 200)}`,
-        );
-      } catch {}
       return parseJevResponse(response.status, response.ok, response.text);
     },
   };
@@ -339,39 +317,11 @@ function notify(
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
-  // [DEBUG temporaneo fork] register chiamato dal loader = modulo caricato
-  try {
-    const line =
-      JSON.stringify({ ts: new Date().toISOString(), phase: 'register' }) + '\n';
-    void (async () => {
-      try {
-        const fs = (await import('node:fs')) as typeof import('node:fs');
-        fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
-      } catch {
-        console.error('[fast-jev-debug] ' + line);
-      }
-    })();
-  } catch {}
   const configured = resolveHookConfig(options);
   let compacting = false;
 
   on('session.compact', async ($, event, next) => {
     try {
-      // [DEBUG temporaneo fork] ingresso hook
-      try {
-        const line =
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            phase: 'hook-start',
-            messages: event.messages.length,
-          }) + '\n';
-        try {
-          const fs = await import('node:fs');
-          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
-        } catch {
-          console.error('[fast-jev-debug] ' + line);
-        }
-      } catch {}
       const config = {
         ...configured,
         apiKey: await getApiKey($, configured),
@@ -396,17 +346,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
       return { messages };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // [DEBUG temporaneo fork] errore reale della compaction su file
-      try {
-        const line =
-          JSON.stringify({ ts: new Date().toISOString(), phase: 'compact', error: message }) + '\n';
-        try {
-          const fs = await import('node:fs');
-          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
-        } catch {
-          console.error('[fast-jev-debug] ' + line);
-        }
-      } catch {}
       notify($, `fallback to built-in summary (${message})`);
       return next(event);
     }
@@ -416,22 +355,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (compacting) return next(event);
     try {
       const { context } = await $.session.usage();
-      // [DEBUG temporaneo fork] soglia e percentuale contesto a ogni fine turno
-      try {
-        const line =
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            phase: 'turn-complete',
-            percent: context.percent ?? 0,
-            threshold: configured.compactAtPercent,
-          }) + '\n';
-        try {
-          const fs = await import('node:fs');
-          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
-        } catch {
-          console.error('[fast-jev-debug] ' + line);
-        }
-      } catch {}
       if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
       compacting = true;
       await $.session.compact();
