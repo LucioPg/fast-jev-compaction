@@ -354,10 +354,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      // [DEBUG temporaneo fork] errore reale della compaction su file
+      try {
+        const line =
+          JSON.stringify({ ts: new Date().toISOString(), phase: 'compact', error: message }) + '\n';
+        try {
+          const fs = await import('node:fs');
+          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
+        } catch {
+          console.error('[fast-jev-debug] ' + line);
+        }
+      } catch {}
+      notify($, `fallback to built-in summary (${message})`);
       return next(event);
     }
   });
