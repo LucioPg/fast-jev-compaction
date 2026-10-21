@@ -67,6 +67,7 @@ function fakeJev(answer: (name: string) => number, seen: Seen[] = []): JevAsker 
 
 const fit = {
   maxStateTokens: 25_000,
+  maxStateChars: 40_000,
   preserveRecentMessages: 0,
   goal: 'fix the test',
 };
@@ -77,6 +78,7 @@ describe('options', () => {
       keepThreshold: 0.5,
       preserveRecentMessages: 6,
       maxStateTokens: 25_000,
+      maxStateChars: 40_000,
       maxRequestTokens: 30_000,
       truncateHeadChars: 300,
     });

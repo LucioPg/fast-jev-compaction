@@ -46,6 +46,12 @@
       "description": "Estimated token budget for the conversation state sent with every Jev request.",
       "default": 25000
     },
+    "maxStateChars": {
+      "type": "number",
+      "title": "Maximum Jev state characters",
+      "description": "Local patch: hard cap on serialized state characters (token estimates undercount URL/JSON-heavy content; laya-serve rejects states over 50 000 chars with 413). Laya default: 40 000.",
+      "default": 40000
+    },
     "maxRequestTokens": {
       "type": "number",
       "title": "Maximum Jev request tokens",

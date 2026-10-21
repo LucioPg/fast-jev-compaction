@@ -19,6 +19,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   keepThreshold: 0.5,
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
+  maxStateChars: 40_000,
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
 };
@@ -41,6 +42,7 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       ),
     ),
     maxStateTokens: Math.max(1, finite(options.maxStateTokens, DEFAULT_OPTIONS.maxStateTokens)),
+    maxStateChars: Math.max(1, finite(options.maxStateChars, DEFAULT_OPTIONS.maxStateChars)),
     maxRequestTokens: Math.max(
       1,
       finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens),

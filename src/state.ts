@@ -195,7 +195,10 @@ export function goalFromMessages(messages: readonly Message[]): string {
 export function fitState(
   messages: readonly Message[],
   calls: readonly ToolCall[],
-  options: Pick<ResolvedCompactOptions, 'maxStateTokens' | 'preserveRecentMessages' | 'goal'>,
+  options: Pick<
+    ResolvedCompactOptions,
+    'maxStateTokens' | 'maxStateChars' | 'preserveRecentMessages' | 'goal'
+  >,
 ): FittedState {
   const goal = options.goal || goalFromMessages(messages);
   const stateOf = (history: HistoryEntry[]): CompactionState => ({
@@ -205,6 +208,12 @@ export function fitState(
   });
   const entryTokens = (entry: HistoryEntry): number => estimateTokens(JSON.stringify(entry)) + 1;
   const baseTokens = estimateTokens(JSON.stringify(stateOf([])));
+  // [Local patch] char-count guard: token estimates undercount symbol/URL/JSON-heavy content,
+  // so the serialized state can blow past the server's hard character cap while `tokens`
+  // still looks small. Tracked incrementally, same pattern as tokens.
+  const maxChars = options.maxStateChars ?? Number.POSITIVE_INFINITY;
+  const entryChars = (entry: HistoryEntry): number => JSON.stringify(entry).length;
+  const baseChars = JSON.stringify(stateOf([])).length;
   const fitted = (history: HistoryEntry[], tokens: number, stage: string): FittedState => ({
     state: stateOf(history),
     tokens,
@@ -214,12 +223,16 @@ export function fitState(
   let history: HistoryEntry[] = [];
   let perEntry: number[] = [];
   let tokens = 0;
+  let perEntryChars: number[] = [];
+  let chars = 0;
   const rebuild = (inputChars: number): void => {
     history = historyEntries(messages, calls, inputChars);
     perEntry = history.map(entryTokens);
     tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
+    perEntryChars = history.map(entryChars);
+    chars = baseChars + perEntryChars.reduce((sum, n) => sum + n, 0);
   };
-  const fits = (): boolean => tokens <= options.maxStateTokens;
+  const fits = (): boolean => tokens <= options.maxStateTokens && chars <= maxChars;
   const shrink = (index: number, change: (entry: HistoryEntry) => void): void => {
     const entry = history[index];
     if (!entry) return;
@@ -227,6 +240,9 @@ export function fitState(
     const now = entryTokens(entry);
     tokens += now - (perEntry[index] ?? 0);
     perEntry[index] = now;
+    const nowChars = entryChars(entry);
+    chars += nowChars - (perEntryChars[index] ?? 0);
+    perEntryChars[index] = nowChars;
   };
 
   rebuild(INPUT_CHARS[0]);
@@ -296,9 +312,12 @@ export function fitState(
   );
   perEntry = history.map(entryTokens);
   tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
+  perEntryChars = history.map(entryChars);
+  chars = baseChars + perEntryChars.reduce((sum, n) => sum + n, 0);
   if (fits()) return fitted(history, tokens, 'old calls merged');
 
   throw new Error(
-    `history too large for Jev (~${tokens} tokens after truncation, limit ${options.maxStateTokens})`,
+    `history too large for Jev (~${tokens} tokens / ~${chars} chars after truncation, limits ` +
+      `${options.maxStateTokens} tokens / ${options.maxStateChars ?? '∞'} chars)`,
   );
 }

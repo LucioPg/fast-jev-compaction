@@ -101,6 +101,9 @@ export interface CompactOptions {
   preserveRecentMessages?: number;
   /** Estimated token ceiling for the state. Default 25000. */
   maxStateTokens?: number;
+  /** Hard character ceiling for the serialized state (guards server-side 413s: token estimates
+   *  undercount symbol/URL/JSON-heavy content by 5x or more). Default 40000. */
+  maxStateChars?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
@@ -112,6 +115,7 @@ export interface ResolvedCompactOptions {
   keepThreshold: number;
   preserveRecentMessages: number;
   maxStateTokens: number;
+  maxStateChars: number;
   maxRequestTokens: number;
   truncateHeadChars: number;
 }

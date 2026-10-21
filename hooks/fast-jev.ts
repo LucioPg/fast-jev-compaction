@@ -66,6 +66,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     'keepThreshold',
     'preserveRecentMessages',
     'maxStateTokens',
+    'maxStateChars',
     'maxRequestTokens',
     'truncateHeadChars',
   ] as const) {
@@ -92,14 +93,22 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   if (config.baseUrl && numbers.maxStateTokens === undefined) {
     config.maxStateTokens = LAYA_MAX_STATE_TOKENS;
   }
+  if (config.baseUrl && numbers.maxStateChars === undefined) {
+    config.maxStateChars = LAYA_MAX_STATE_CHARS;
+  }
   return config;
 }
 
 /** Local patch: Jev-protocol endpoint defaults to the user's local Laya server. */
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8001/v1/systemone'; // DEBUG: proxy diagnostico su 8001 → 8000
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1/systemone';
 
 /** Local patch: Laya has a small context — reduced state budget when not set explicitly. */
 const LAYA_MAX_STATE_TOKENS = 900;
+
+/** Local patch: hard character cap for the serialized state. Token estimates undercount
+ *  symbol/URL/JSON-heavy content, and laya-serve answers 413 past 50 000 state chars
+ *  (serve.py MAX_STATE_CHARS). 40 000 leaves headroom for JSON escaping. */
+const LAYA_MAX_STATE_CHARS = 40_000;
 
 async function getBaseUrl(
   $: {
