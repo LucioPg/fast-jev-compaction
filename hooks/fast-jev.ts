@@ -335,6 +335,19 @@ function notify(
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
+  // [DEBUG temporaneo fork] register chiamato dal loader = modulo caricato
+  try {
+    const line =
+      JSON.stringify({ ts: new Date().toISOString(), phase: 'register' }) + '\n';
+    void (async () => {
+      try {
+        const fs = (await import('node:fs')) as typeof import('node:fs');
+        fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
+      } catch {
+        console.error('[fast-jev-debug] ' + line);
+      }
+    })();
+  } catch {}
   const configured = resolveHookConfig(options);
   let compacting = false;
 

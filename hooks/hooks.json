@@ -1,3 +1,14 @@
 {
-  "modules": ["./fast-jev.ts"]
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y tsx \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-precompact.ts\""
+          }
+        ]
+      }
+    ]
+  }
 }
