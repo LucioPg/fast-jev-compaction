@@ -399,6 +399,22 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (compacting) return next(event);
     try {
       const { context } = await $.session.usage();
+      // [DEBUG temporaneo fork] soglia e percentuale contesto a ogni fine turno
+      try {
+        const line =
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            phase: 'turn-complete',
+            percent: context.percent ?? 0,
+            threshold: configured.compactAtPercent,
+          }) + '\n';
+        try {
+          const fs = await import('node:fs');
+          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', line);
+        } catch {
+          console.error('[fast-jev-debug] ' + line);
+        }
+      } catch {}
       if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
       compacting = true;
       await $.session.compact();
