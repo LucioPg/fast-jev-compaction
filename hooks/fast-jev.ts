@@ -96,7 +96,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
 }
 
 /** Local patch: Jev-protocol endpoint defaults to the user's local Laya server. */
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1/systemone';
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8001/v1/systemone'; // DEBUG: proxy diagnostico su 8001 → 8000
 
 /** Local patch: Laya has a small context — reduced state budget when not set explicitly. */
 const LAYA_MAX_STATE_TOKENS = 900;
@@ -130,11 +130,33 @@ export function jevAsker(
   return {
     async ask(state, questions) {
       const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
+      // [DEBUG temporaneo fork] log diagnostico su ogni richiesta — rimuovere dopo analisi
+      try {
+        const debugLine = JSON.stringify({
+          ts: new Date().toISOString(),
+          url: request.url,
+          bodyLen: request.body.length,
+          stateLen: typeof state === 'string' ? state.length : JSON.stringify(state).length,
+          questions: Object.keys(questions ?? {}),
+        });
+        try {
+          const fs = await import('node:fs');
+          fs.appendFileSync('C:/Users/Lucio/.claude/fast-jev-debug.log', debugLine + '\n');
+        } catch {
+          console.error('[fast-jev-debug] ' + debugLine);
+        }
+      } catch {}
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
       });
+      // [DEBUG temporaneo fork] risposta (status + inizio body)
+      try {
+        console.error(
+          `[fast-jev-debug] status=${response.status} resp=${response.text.slice(0, 200)}`,
+        );
+      } catch {}
       return parseJevResponse(response.status, response.ok, response.text);
     },
   };
