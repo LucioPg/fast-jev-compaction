@@ -1,4 +1,5 @@
 import type {
+  CallGroup,
   CompactionState,
   FittedState,
   HistoryEntry,
@@ -15,6 +16,42 @@ export const STATE_CONTEXT =
 const INPUT_CHARS = [1000, 200, 60] as const;
 const TEXT_HEAD = 400;
 const TEXT_TAIL = 150;
+
+/** Newest unpinned calls asked one by one; older ones share one vote per tool group. */
+export const DEFAULT_MAX_CANDIDATE_CALLS = 32;
+
+/**
+ * Splits the unpinned calls into individually-asked candidates (the newest
+ * `maxCandidateCalls`) and grouped ones (everything older).
+ */
+export function selectCandidates(
+  calls: readonly ToolCall[],
+  maxCandidateCalls: number,
+): { fine: ToolCall[]; grouped: ToolCall[] } {
+  const eligible = calls.filter((call) => !call.pinned);
+  const cut = Math.max(0, eligible.length - Math.max(0, maxCandidateCalls));
+  return { fine: eligible.slice(cut), grouped: eligible.slice(0, cut) };
+}
+
+/** One macro-category per tool, in first-appearance order. */
+export function buildGroups(grouped: readonly ToolCall[]): CallGroup[] {
+  const byTool = new Map<string, number>();
+  for (const call of grouped) byTool.set(call.tool, (byTool.get(call.tool) ?? 0) + 1);
+  return [...byTool.entries()].map(([tool, count], index) => ({ id: `g${index + 1}`, tool, count }));
+}
+
+/**
+ * The state entry standing in for one group of old calls. It carries `i: 0`,
+ * so the fitting stages treat it as pinned and never drop or shrink it: Jev
+ * needs it in view to answer the group's questions.
+ */
+export function groupNote(group: CallGroup): HistoryEntry {
+  return {
+    i: 0,
+    role: 'assistant',
+    text: `${group.id}: ${group.count} earlier ${group.tool} tool calls (inputs and results omitted)`,
+  };
+}
 
 const TOKEN_PIECES = /[A-Za-z]+|\d+|[^\sA-Za-z\d]/g;
 
@@ -150,10 +187,10 @@ function callsByMessage(calls: readonly ToolCall[]): Map<number, ToolCall[]> {
 
 function historyEntries(
   messages: readonly Message[],
-  calls: readonly ToolCall[],
+  visibleCalls: readonly ToolCall[],
   inputChars: number,
 ): HistoryEntry[] {
-  const byMessage = callsByMessage(calls);
+  const byMessage = callsByMessage(visibleCalls);
   const entries: HistoryEntry[] = [];
   messages.forEach((message, i) => {
     const toolCalls = (byMessage.get(i) ?? []).map((call) => ({
@@ -191,15 +228,29 @@ export function goalFromMessages(messages: readonly Message[]): string {
  * to a one-line note, then old tool calls shrink to one line each, then old
  * messages that carry no call are left out, then runs of old call-only
  * messages are folded into one entry. Throws when even that is too big.
+ *
+ * Calls beyond `maxCandidateCalls` never appear one by one: they are folded
+ * into one aggregate note per tool (a `CallGroup`), and Jev is asked a single
+ * pair of questions about the whole group instead of about each call. This
+ * keeps the state O(groups + candidates) rather than O(total calls), which is
+ * what lets a long session fit the server's hard limits at all.
  */
 export function fitState(
   messages: readonly Message[],
   calls: readonly ToolCall[],
   options: Pick<
     ResolvedCompactOptions,
-    'maxStateTokens' | 'maxStateChars' | 'preserveRecentMessages' | 'goal'
+    'maxStateTokens' | 'maxStateChars' | 'maxCandidateCalls' | 'preserveRecentMessages' | 'goal'
   >,
 ): FittedState {
+  const { fine, grouped } = selectCandidates(
+    calls,
+    options.maxCandidateCalls ?? DEFAULT_MAX_CANDIDATE_CALLS,
+  );
+  const candidateIds = new Set(fine.map((call) => call.id));
+  // Calls Jev can see individually; grouped ones exist in the state only as notes.
+  const visibleCalls = calls.filter((call) => call.pinned || candidateIds.has(call.id));
+  const groupNotes = buildGroups(grouped).map(groupNote);
   const goal = options.goal || goalFromMessages(messages);
   const stateOf = (history: HistoryEntry[]): CompactionState => ({
     context: STATE_CONTEXT,
@@ -226,7 +277,7 @@ export function fitState(
   let perEntryChars: number[] = [];
   let chars = 0;
   const rebuild = (inputChars: number): void => {
-    history = historyEntries(messages, calls, inputChars);
+    history = [...groupNotes, ...historyEntries(messages, visibleCalls, inputChars)];
     perEntry = history.map(entryTokens);
     tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
     perEntryChars = history.map(entryChars);
@@ -280,7 +331,7 @@ export function fitState(
     if (fits()) return fitted(history, tokens, 'old messages collapsed');
   }
 
-  const byMessage = callsByMessage(calls);
+  const byMessage = callsByMessage(visibleCalls);
   for (const index of order) {
     const entry = history[index]!;
     const own = byMessage.get(entry.i);

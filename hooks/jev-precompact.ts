@@ -10,16 +10,16 @@
 import fs from 'node:fs';
 import { compact, resolveOptions } from '../src/compact.js';
 import { DEFAULT_MODEL } from '../src/request.js';
-import type { Message } from '../src/types.js';
+import type { JevResponse, Message } from '../src/types.js';
 
 const LOG_PATH = 'C:/Users/Lucio/.claude/fast-jev-precompact.log';
 const BASE_URL = process.env.JEV_BASE_URL || 'http://127.0.0.1:8000/v1/systemone';
 const MODEL = process.env.JEV_MODEL || DEFAULT_MODEL;
-const MAX_STATE_TOKENS = 900;
+const MAX_STATE_TOKENS = 3500;
 const MAX_STATE_CHARS = 40_000;
 const OVERALL_TIMEOUT_MS = 50_000;
 
-type ToolUse = { tool_use_id: string; tool: string; input: unknown; text?: string; isError?: boolean };
+type ToolUse = { tool_use_id: string; tool: string; input: Record<string, unknown>; text?: string; isError?: boolean };
 type ToolResult = { tool_use_id: string; text: string; isError?: boolean };
 type SessionMessage = { role: 'user' | 'assistant'; text: string; toolUses: ToolUse[]; toolResults?: ToolResult[] };
 
@@ -60,7 +60,7 @@ function toSessionMessage(line: Record<string, unknown>): SessionMessage | null 
     if (b.type === 'text' && typeof b.text === 'string') {
       out.text += (out.text ? '\n' : '') + b.text;
     } else if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
-      out.toolUses.push({ tool_use_id: b.id, tool: b.name, input: b.input ?? {} });
+      out.toolUses.push({ tool_use_id: b.id, tool: b.name, input: (b.input ?? {}) as Record<string, unknown> });
     } else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
       out.toolResults!.push({
         tool_use_id: b.tool_use_id,
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
         });
         const text = await response.text();
         if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`);
-        return JSON.parse(text) as { answers: Record<string, { noul?: number }> };
+        return JSON.parse(text) as unknown as JevResponse;
       },
     }, resolved),
     new Promise<never>((_, reject) =>
@@ -131,12 +131,20 @@ async function main(): Promise<void> {
     ),
   ]);
 
-  const stats = result.stats as { requests?: number; stateTokens?: number; stateStage?: string };
+  const stats = result.stats as {
+    requests?: number;
+    stateTokens?: number;
+    stateStage?: string;
+    groupedCalls?: number;
+    calls?: number;
+  };
   const durationMs = Date.now() - started;
   logLine({
     phase: 'precompact',
     trigger,
     messages: messages.length,
+    calls: stats.calls ?? 0,
+    groupedCalls: stats.groupedCalls ?? 0,
     requests: stats.requests ?? 0,
     stateTokens: stats.stateTokens ?? 0,
     stateStage: stats.stateStage ?? '',

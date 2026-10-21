@@ -58,6 +58,12 @@
       "description": "Estimated token budget for state plus questions in one Jev request.",
       "default": 30000
     },
+    "maxCandidateCalls": {
+      "type": "number",
+      "title": "Calls asked individually",
+      "description": "Newest unpinned tool calls asked one by one; older ones share one Jev vote per tool group, keeping the state small on long sessions.",
+      "default": 32
+    },
     "truncateHeadChars": {
       "type": "number",
       "title": "Truncated tool result head",

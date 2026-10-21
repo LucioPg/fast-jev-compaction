@@ -68,6 +68,7 @@ function fakeJev(answer: (name: string) => number, seen: Seen[] = []): JevAsker 
 const fit = {
   maxStateTokens: 25_000,
   maxStateChars: 40_000,
+  maxCandidateCalls: 32,
   preserveRecentMessages: 0,
   goal: 'fix the test',
 };
@@ -170,10 +171,12 @@ describe('state fitting', () => {
     }
     messages.push(message('assistant', 'done'));
     const calls = collectToolCalls(messages, 1);
-    const full = fitState(messages, calls, { ...fit, preserveRecentMessages: 1 });
+    // maxCandidateCalls alto: questo test copre gli stage di shrink, non il grouping
+    const full = fitState(messages, calls, { ...fit, preserveRecentMessages: 1, maxCandidateCalls: 100 });
     const compacted = fitState(messages, calls, {
       ...fit,
       preserveRecentMessages: 1,
+      maxCandidateCalls: 100,
       maxStateTokens: Math.floor(full.tokens * 0.8),
     });
     expect(compacted.stage).toBe('old calls compacted');
@@ -187,6 +190,7 @@ describe('state fitting', () => {
     const merged = fitState(messages, calls, {
       ...fit,
       preserveRecentMessages: 1,
+      maxCandidateCalls: 100,
       maxStateTokens: Math.floor(full.tokens * 0.45),
     });
     expect(merged.stage).toBe('old calls merged');

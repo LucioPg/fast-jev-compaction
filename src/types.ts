@@ -30,6 +30,13 @@ export interface Message {
   toolResults?: ToolResult[];
 }
 
+/** A macro-category of old tool calls that share one Jev vote (`g1`, `g2`, ...). */
+export interface CallGroup {
+  id: string;
+  tool: string;
+  count: number;
+}
+
 /** A tool call paired with its result by `tool_use_id`. */
 export interface ToolCall {
   /** Short id used in the Jev state and question names (`t1`, `t2`, ...). */
@@ -106,6 +113,10 @@ export interface CompactOptions {
   maxStateChars?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
+  /** Newest unpinned calls asked one by one; older ones share one vote per tool group.
+   *  Keeps the state O(groups + candidates) instead of O(total calls) on long sessions.
+   *  Default 32. */
+  maxCandidateCalls?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
 }
@@ -117,6 +128,7 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxStateChars: number;
   maxRequestTokens: number;
+  maxCandidateCalls: number;
   truncateHeadChars: number;
 }
 
@@ -130,6 +142,8 @@ export interface CompactResult {
     charsBefore: number;
     charsAfter: number;
     calls: number;
+    /** Calls decided by their tool group's vote instead of individually. */
+    groupedCalls: number;
     kept: number;
     resultsDropped: number;
     callsDropped: number;

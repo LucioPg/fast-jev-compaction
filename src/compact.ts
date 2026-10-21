@@ -1,8 +1,16 @@
 import { noulAnswer } from './request.js';
-import { collectToolCalls, estimateTokens, fitState } from './state.js';
+import {
+  DEFAULT_MAX_CANDIDATE_CALLS,
+  buildGroups,
+  collectToolCalls,
+  estimateTokens,
+  fitState,
+  selectCandidates,
+} from './state.js';
 import type {
   CallAnswer,
   CallDecision,
+  CallGroup,
   CompactOptions,
   CompactResult,
   CompactionState,
@@ -21,11 +29,16 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxStateTokens: 25_000,
   maxStateChars: 40_000,
   maxRequestTokens: 30_000,
+  maxCandidateCalls: DEFAULT_MAX_CANDIDATE_CALLS,
   truncateHeadChars: 300,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 20;
+
+/** Items (calls or groups) per request: two `noul` questions each, so a batch
+ *  stays inside laya-serve's MAX_QUESTIONS of 64 per request. */
+const MAX_ITEMS_PER_BATCH = 32;
 
 function finite(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -46,6 +59,10 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
     maxRequestTokens: Math.max(
       1,
       finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens),
+    ),
+    maxCandidateCalls: Math.max(
+      0,
+      Math.floor(finite(options.maxCandidateCalls, DEFAULT_OPTIONS.maxCandidateCalls)),
     ),
     truncateHeadChars: Math.max(
       0,
@@ -68,22 +85,41 @@ export function questionsFor(call: ToolCall): JevQuestions {
   };
 }
 
+/** The two `noul` questions asked about one group of old calls, as a whole. */
+export function groupQuestions(group: CallGroup): JevQuestions {
+  return {
+    [`call_${group.id}`]: {
+      type: 'noul',
+      instructions: `Group ${group.id} covers ${group.count} earlier ${group.tool} tool calls: these calls should stay in the history as call entries, since knowing they were made, with their inputs, still matters for what the assistant does next`,
+    },
+    [`result_${group.id}`]: {
+      type: 'noul',
+      instructions: `Group ${group.id}: the full outputs of those ${group.count} earlier ${group.tool} tool calls should stay in the history verbatim: the assistant still needs their contents and re-running the tools would not do`,
+    },
+  };
+}
+
 /**
- * Splits the candidate calls into batches whose questions, together with the
- * (always complete) state, fit one request.
+ * Splits the items into batches whose questions, together with the (always
+ * complete) state, fit one request: by token budget and never more than
+ * `MAX_ITEMS_PER_BATCH` items (two questions each) per batch.
  */
-export function batchCalls(
-  calls: readonly ToolCall[],
+export function batchCalls<T extends { id: string }>(
+  items: readonly T[],
   stateTokens: number,
   options: Pick<ResolvedCompactOptions, 'maxRequestTokens'>,
-): ToolCall[][] {
+  questionsOf: (item: T) => JevQuestions = (item) => questionsFor(item as unknown as ToolCall),
+): T[][] {
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
-  const batches: ToolCall[][] = [];
-  let current: ToolCall[] = [];
+  const batches: T[][] = [];
+  let current: T[] = [];
   let currentTokens = 0;
-  for (const call of calls) {
-    const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
-    if (current.length > 0 && currentTokens + tokens > budget) {
+  for (const item of items) {
+    const tokens = estimateTokens(JSON.stringify(questionsOf(item)));
+    if (
+      current.length > 0 &&
+      (current.length >= MAX_ITEMS_PER_BATCH || currentTokens + tokens > budget)
+    ) {
       batches.push(current);
       current = [];
       currentTokens = 0;
@@ -93,7 +129,7 @@ export function batchCalls(
         `state leaves no room for questions (~${stateTokens} of ${options.maxRequestTokens} tokens)`,
       );
     }
-    current.push(call);
+    current.push(item);
     currentTokens += tokens;
   }
   if (current.length > 0) batches.push(current);
@@ -116,19 +152,20 @@ export function decideCall(
   return { ...base, action: 'drop_call', reason: 'call_dropped' };
 }
 
-async function askBatch(
+async function askBatch<T extends { id: string }>(
   asker: JevAsker,
   state: CompactionState,
-  batch: readonly ToolCall[],
+  batch: readonly T[],
+  questionsOf: (item: T) => JevQuestions,
 ): Promise<Map<string, CallAnswer>> {
-  const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
+  const questions: JevQuestions = Object.assign({}, ...batch.map(questionsOf));
   const { answers } = await asker.ask(state, questions);
   return new Map(
-    batch.map((call) => [
-      call.id,
+    batch.map((item) => [
+      item.id,
       {
-        keepCall: noulAnswer(answers, `call_${call.id}`),
-        keepResult: noulAnswer(answers, `result_${call.id}`),
+        keepCall: noulAnswer(answers, `call_${item.id}`),
+        keepResult: noulAnswer(answers, `result_${item.id}`),
       },
     ]),
   );
@@ -252,7 +289,9 @@ function count(decisions: readonly CallDecision[], reason: CallDecision['reason'
 /**
  * Compacts a transcript by asking Jev, for every tool call outside the pinned
  * first and newest messages, whether the call and whether its result must
- * stay. The whole history (results omitted, fitted into `maxStateTokens`) is
+ * stay. Calls beyond `maxCandidateCalls` share one vote per tool group
+ * instead of being asked one by one, and old messages collapse accordingly.
+ * The whole history (results omitted, fitted into `maxStateTokens`) is
  * sent as state with every batch of questions. Throws when Jev fails or the
  * history cannot be fitted; the caller decides whether to fall back.
  */
@@ -264,11 +303,12 @@ export async function compact(
   const started = Date.now();
   const resolved = resolveOptions(options);
   const calls = collectToolCalls(messages, resolved.preserveRecentMessages);
-  const candidates = calls.filter((call) => !call.pinned);
+  const { fine: candidates, grouped } = selectCandidates(calls, resolved.maxCandidateCalls);
+  const groups = buildGroups(grouped);
   const charsBefore = messages.reduce((sum, message) => sum + messageChars(message), 0);
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
-  let batches: ToolCall[][] = [];
+  let requestCount = 0;
   const answers = new Map<string, CallAnswer>();
   // [DEBUG temporaneo fork] fasi fit
   const debugLog = (payload: Record<string, unknown>): void => {
@@ -283,30 +323,47 @@ export async function compact(
       }
     })();
   };
-  if (candidates.length > 0) {
+  if (candidates.length > 0 || groups.length > 0) {
     debugLog({
       phase: 'fit-start',
       messages: messages.length,
       calls: calls.length,
       candidates: candidates.length,
+      groups: groups.length,
     });
     const state = fitState(messages, calls, resolved);
     debugLog({ phase: 'fit-done', stage: state.stage, tokens: state.tokens });
     fitted = state;
-    batches = batchCalls(candidates, state.tokens, resolved);
-    debugLog({ phase: 'requests-start', batches: batches.length });
-    const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
-    );
+    // I gruppi vengono chiesti per primi: una richiesta propria, poi le call individuali.
+    const groupBatches =
+      groups.length > 0 ? batchCalls(groups, state.tokens, resolved, groupQuestions) : [];
+    const callBatches = candidates.length > 0 ? batchCalls(candidates, state.tokens, resolved) : [];
+    requestCount = groupBatches.length + callBatches.length;
+    debugLog({ phase: 'requests-start', batches: requestCount });
+    const answered = await Promise.all([
+      ...groupBatches.map((batch) => askBatch(asker, state.state, batch, groupQuestions)),
+      ...callBatches.map((batch) => askBatch(asker, state.state, batch, questionsFor)),
+    ]);
     debugLog({ phase: 'requests-done' });
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   } else {
     debugLog({ phase: 'no-candidates' });
   }
 
-  const decisions = calls.map((call) =>
-    decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
-  );
+  // Grouped calls inherit their group's vote; individually-asked calls use
+  // their own answers, and anything unanswered (pinned, or no request ran)
+  // stays by default.
+  const groupIdOfCall = new Map<string, string>();
+  const groupIdByTool = new Map(groups.map((group) => [group.tool, group.id]));
+  for (const call of grouped) {
+    const groupId = groupIdByTool.get(call.tool);
+    if (groupId) groupIdOfCall.set(call.id, groupId);
+  }
+  const decisions = calls.map((call) => {
+    const groupId = groupIdOfCall.get(call.id);
+    const answer = (groupId ? answers.get(groupId) : undefined) ?? answers.get(call.id);
+    return decideCall(call, answer ?? { keepCall: 1, keepResult: 1 }, resolved);
+  });
   const kept = applyDecisions(
     messages,
     decisions,
@@ -322,13 +379,14 @@ export async function compact(
       charsBefore,
       charsAfter: kept.reduce((sum, message) => sum + messageChars(message), 0),
       calls: calls.length,
+      groupedCalls: grouped.length,
       kept: count(decisions, 'kept'),
       resultsDropped: count(decisions, 'result_dropped'),
       callsDropped: count(decisions, 'call_dropped'),
       pinned: count(decisions, 'pinned'),
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
-      requests: batches.length,
+      requests: requestCount,
       ms: Date.now() - started,
     },
   };

@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],
-    "types": [],
+    "types": ["node"],
     "module": "esnext",
     "moduleResolution": "bundler",
     "strict": true,

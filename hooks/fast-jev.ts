@@ -68,6 +68,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     'maxStateTokens',
     'maxStateChars',
     'maxRequestTokens',
+    'maxCandidateCalls',
     'truncateHeadChars',
   ] as const) {
     const value = options[key];
@@ -102,8 +103,11 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
 /** Local patch: Jev-protocol endpoint defaults to the user's local Laya server. */
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1/systemone';
 
-/** Local patch: Laya has a small context — reduced state budget when not set explicitly. */
-const LAYA_MAX_STATE_TOKENS = 900;
+/** Local patch: Laya has a small context — reduced state budget when not set explicitly.
+ *  3000 (not the hosted 25000): with grouped history the state floor is
+ *  candidates + group notes + pinned window, well under this, while laya-serve
+ *  admits up to 8192 tokens per request. */
+const LAYA_MAX_STATE_TOKENS = 3500;
 
 /** Local patch: hard character cap for the serialized state. Token estimates undercount
  *  symbol/URL/JSON-heavy content, and laya-serve answers 413 past 50 000 state chars
